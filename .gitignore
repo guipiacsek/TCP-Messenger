@@ -1,0 +1,4 @@
+chat.key
+__pycache__/
+results/
+.venv/
