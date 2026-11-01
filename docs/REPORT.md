@@ -1,7 +1,6 @@
 # TCP Messenger: Technical Report
 
-**CSE 3461 – Computer Networking, The Ohio State University**
-**Authors:** _<your name>_, Elijah _<last name>_
+**Authors:** _<your names>_
 
 ## 1. Overview
 
@@ -10,7 +9,7 @@ TCP Messenger is a client–server chat application built directly on Python's `
 1. **Broadcast:** a message from one client is relayed to all other connected clients.
 2. **Private (1-to-1):** a message addressed to a username is delivered only to that client.
 
-For the open-ended enhanced feature we chose **end-to-end payload encryption on the wire** across both chat modes, rather than a machine learning feature. We then measured the processing overhead and the latency it adds, on local loopback and over a real Wi-Fi network.
+On top of that, all traffic in both chat modes is **encrypted on the wire**. We measured the processing overhead and the latency it adds, on local loopback and over a real Wi-Fi network.
 
 ## 2. Architecture
 
@@ -102,7 +101,7 @@ Design choices:
 - **Failure isolation.** A failed send to a dead socket returns `False` instead of raising. The dead client's own handler thread sees the closed connection, removes it from `clients` and broadcasts a leave notice. One client crashing never takes down another thread.
 - `TCP_NODELAY` is set on both ends so that small chat messages are not delayed by Nagle's algorithm.
 
-## 5. Enhanced feature: encryption
+## 5. Encryption
 
 ### 5.1 Design
 
@@ -181,7 +180,7 @@ _Fill in from `results/rtt_wifi_*.csv`. Run the server on one laptop and `benchm
 - integration test with a live server and 3 clients: the broadcast reaches everyone, the private message reaches only its recipient (and does not leak to the third client), and `/list` is correct
 - a duplicate username is rejected, and a private message to an unknown user returns an error
 
-Manual testing: 3 terminal clients on loopback, and clients on separate laptops over campus Wi-Fi.
+Manual testing: 3 terminal clients on loopback, and clients on separate laptops over Wi-Fi.
 
 ## 8. Possible extensions
 

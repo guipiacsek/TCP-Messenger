@@ -1,10 +1,10 @@
 # TCP Messenger
 
-Multithreaded TCP chat application in Python (`socket` + `threading`). Built for **CSE 3461 – Computer Networking** at The Ohio State University.
+Multithreaded TCP chat application in Python (`socket` + `threading`).
 
 - **Broadcast chat:** a message from any client is relayed to every connected client
 - **Private chat:** `/msg <user> <text>` is delivered only to that user
-- **Encryption (enhanced feature):** every payload in both chat modes is encrypted with Fernet (AES-128-CBC + HMAC-SHA256)
+- **Encryption:** every payload in both chat modes is encrypted with Fernet (AES-128-CBC + HMAC-SHA256)
 - **Benchmarks:** encryption cost and round-trip latency, encryption on vs off, on loopback and over Wi-Fi
 
 See [docs/REPORT.md](docs/REPORT.md) for the design and results, and [docs/DEMO.md](docs/DEMO.md) for the video demo script.
