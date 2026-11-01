@@ -36,7 +36,7 @@ flowchart LR
 
 - **Server** (`server.py`): the main thread blocks on `accept()`. Each new connection gets a dedicated daemon **handler thread**, which reads frames from its client and routes them.
 - **Client** (`client.py`): the main thread reads keyboard input and sends. A background **receiver thread** blocks on `recv()` and prints incoming messages, so a user can receive messages while typing.
-- The client's networking is the `ChatClient` class, which hands incoming messages to an `on_message` callback. The terminal UI is a thin layer on top, so a GUI (for example Tkinter) can reuse `ChatClient` unchanged.
+- The client's networking is the `ChatClient` class, which hands incoming messages to an `on_message` callback. The terminal UI is a thin layer on top. The desktop GUI (`gui.py` + `gui.html`, shown in a native window with pywebview) reuses `ChatClient` unchanged.
 
 ## 3. Protocol design
 
@@ -184,7 +184,7 @@ Manual testing: 3 terminal clients on loopback, and clients on separate laptops 
 
 ## 8. Possible extensions
 
-- Tkinter GUI on top of `ChatClient`
+- Per-conversation history in the GUI (currently one shared timeline)
 - TLS or per-session key exchange instead of a pre-shared key
 - Chat history and offline message delivery
 - Replacing thread-per-client with `selectors`/`asyncio` to scale to thousands of clients

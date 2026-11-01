@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TCP Messenger</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root { --bg: #fff; --soft: #f2f2f7; --line: #eee; --text: #1c1c1e; --muted: #8e8e93; --in: #e9e9eb; --pm-in: #fff1d6;
+          --blue: #007aff; --purple: #af52de; --green: #34c759; --red: #ff3b30; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --soft: #2c2c2e; --line: #38383a; --text: #f2f2f7; --in: #3a3a3c; --pm-in: #4a3b1f; }
+  }
+  html, body { height: 100%; }
+  body { font: 15px/1.4 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+  header { padding: 14px 16px 10px; text-align: center; border-bottom: 1px solid var(--line); background: var(--soft); }
+  header b { font-size: 17px; display: block; } header small { color: var(--green); font-size: 12px; }
+  .chips { display: flex; gap: 6px; padding: 10px 12px; overflow-x: auto; border-bottom: 1px solid var(--line); flex: none; }
+  .chip { padding: 6px 12px; border-radius: 99px; background: var(--soft); cursor: pointer; white-space: nowrap; font-size: 14px; border: 0; color: inherit; font-family: inherit; }
+  .chip.on { background: var(--blue); color: #fff; }
+  #log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .b { max-width: 75%; padding: 8px 13px; border-radius: 18px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .in { background: var(--in); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .out { background: var(--blue); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .pm.in { background: var(--pm-in); } .pm.out { background: var(--purple); }
+  .name { font-size: 11px; color: var(--muted); margin: 8px 0 0 12px; } .name.r { align-self: flex-end; margin: 8px 12px 0 0; }
+  .sys { align-self: center; font-size: 12px; color: var(--muted); margin: 8px 0; text-align: center; }
+  .sys.err { color: var(--red); }
+  form { display: flex; gap: 8px; padding: 10px 12px 14px; border-top: 1px solid var(--line); flex: none; }
+  input { flex: 1; border: 1px solid var(--line); background: var(--bg); color: inherit; border-radius: 99px; padding: 9px 14px; font: inherit; outline-color: var(--blue); min-width: 0; }
+  .send { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--blue); color: #fff; font-size: 18px; cursor: pointer; flex: none; }
+  .send:disabled { opacity: .4; cursor: default; }
+  /* join screen */
+  #join { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; justify-content: center; padding: 32px; gap: 14px; text-align: center; }
+  #join h1 { font-size: 26px; } #join p { color: var(--muted); font-size: 14px; }
+  #join input { text-align: center; padding: 12px; }
+  #join button { padding: 12px; border-radius: 99px; border: 0; background: var(--blue); color: #fff; font: 600 15px inherit; cursor: pointer; }
+  #joinErr { color: var(--red); font-size: 13px; min-height: 18px; }
+</style></head><body>
+<form id="join">
+  <h1>TCP Messenger</h1>
+  <p id="joinInfo">Pick a username to join</p>
+  <input id="nameIn" placeholder="username" autocomplete="off" autofocus maxlength="20" aria-label="Username">
+  <button>Join</button>
+  <div id="joinErr" role="alert"></div>
+</form>
+
+<header><b>TCP Messenger</b><small id="statusEl"></small></header>
+<div class="chips" id="chips" role="tablist" aria-label="Send to"></div>
+<div id="log" aria-live="polite"></div>
+<form id="f"><input id="t" placeholder="Message everyone" autocomplete="off" aria-label="Message"><button class="send" id="sendBtn" aria-label="Send">↑</button></form>
+
+<script>
+  let me = "", to = "", users = [], encrypted = false, connected = true;
+  const api = () => window.pywebview.api;
+
+  function add(cls, text) {
+    const d = document.createElement("div"); d.className = cls; d.textContent = text;
+    log.append(d); log.scrollTop = log.scrollHeight;
+  }
+  const bubble = (who, text, cls) => { add("name" + (cls.includes("out") ? " r" : ""), who); add("b " + cls, text); };
+
+  function renderChips() {
+    if (to && !users.includes(to)) to = "";  // recipient left
+    chips.replaceChildren(...["", ...users.filter(u => u !== me)].map(u => {
+      const c = document.createElement("button");
+      c.className = "chip" + (u === to ? " on" : ""); c.role = "tab";
+      c.textContent = u ? "🔒 " + u : "Everyone";
+      c.onclick = () => { to = u; renderChips(); t.focus(); };
+      return c;
+    }));
+    t.placeholder = "Message " + (to || "everyone");
+    statusEl.textContent = `● ${users.length} online` + (encrypted ? " · 🔒 encrypted" : " · ⚠ not encrypted");
+  }
+
+  // called from Python (gui.py) for every message the server sends us
+  window.onMessage = msg => {
+    switch (msg.type) {
+      case "msg": bubble(msg.from, msg.text, "in"); break;
+      case "pm": bubble(msg.from + " · private", msg.text, "in pm"); break;
+      case "list": users = msg.users; renderChips(); break;
+      case "sys": add("sys", msg.text); api().list_users(); break;  // join/leave: refresh chips
+      case "error":
+        add("sys err", msg.text);
+        if (msg.text === "disconnected from server") { connected = false; t.disabled = sendBtn.disabled = true; statusEl.textContent = "● offline"; }
+        break;
+    }
+  };
+
+  join.onsubmit = async e => {
+    e.preventDefault();
+    const name = nameIn.value.trim();
+    if (!name || /\s/.test(name)) { joinErr.textContent = "Username can't be empty or contain spaces"; return; }
+    joinErr.textContent = "Connecting…";
+    const r = await api().join(name);
+    if (!r.ok) { joinErr.textContent = r.error; return; }
+    me = r.name; encrypted = r.encrypted;
+    join.remove(); add("sys", `Connected to ${r.server} as ${me}`); t.focus();
+  };
+
+  f.onsubmit = e => {
+    e.preventDefault();
+    const text = t.value.trim(); if (!text || !connected) return;
+    if (to) { api().private(to, text); bubble("you → " + to + " · private", text, "out pm"); }
+    else { api().broadcast(text); bubble("you", text, "out"); }
+    t.value = "";
+  };
+</script>
+</body></html>

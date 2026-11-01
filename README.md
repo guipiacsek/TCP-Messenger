@@ -24,6 +24,12 @@ python client.py --name alice          # terminal 2
 python client.py --name bob            # terminal 3
 ```
 
+Or use the desktop GUI instead of the terminal client. It asks for a username, then lets you pick "Everyone" or a user to message privately. It takes the same `--host`, `--port`, `--key` and `--no-encrypt` flags:
+
+```bash
+python gui.py
+```
+
 ## Run over Wi-Fi
 
 1. On the server machine, find its LAN IP (macOS: `ipconfig getifaddr en0`, Linux: `hostname -I`, Windows: `ipconfig`).
@@ -64,7 +70,9 @@ Results are printed and saved to `results/*.csv`.
 ```
 common.py      framing (length prefix), JSON encode/decode, Fernet helpers
 server.py      ChatServer: accept loop, thread per client, broadcast / private routing
-client.py      ChatClient (networking, reusable by a future GUI) + terminal front end
+client.py      ChatClient (networking) + terminal front end
+gui.py         desktop GUI: gui.html in a native window (pywebview), wired to ChatClient
+gui.html       GUI layout and behaviour
 benchmark.py   crypto cost + round-trip latency measurements
 test_chat.py   unit + integration tests
 ```
