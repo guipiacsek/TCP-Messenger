@@ -20,7 +20,7 @@ import timeit
 from cryptography.fernet import Fernet
 
 from client import ChatClient
-from common import KEY_FILE, decode, encode, load_cipher, make_msg
+from common import DEFAULT_PORT, cipher_from_args, decode, encode, make_msg
 from server import ChatServer
 
 SIZES = [64, 256, 1024, 4096, 8192]
@@ -87,13 +87,15 @@ def save_csv(path, rows):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="remote server (omit to benchmark on localhost)")
-    p.add_argument("--port", type=int, default=5050)
-    p.add_argument("--key", default=KEY_FILE)
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--password", help="remote server's room password (prompted if needed)")
     p.add_argument("--no-encrypt", action="store_true", help="remote server runs with --no-encrypt")
     p.add_argument("-n", type=int, default=1000, help="iterations per size")
     a = p.parse_args()
 
-    cipher = load_cipher(a.key) if os.path.exists(a.key) else Fernet(Fernet.generate_key())
+    # the key's value doesn't affect speed, so local runs use a random one
+    remote_cipher = cipher_from_args(a) if a.host else None
+    cipher = remote_cipher or Fernet(Fernet.generate_key())
     crypto = crypto_bench(cipher, a.n)
     print_table("Crypto cost per message (microseconds)", crypto)
     save_csv("results/crypto.csv", crypto)

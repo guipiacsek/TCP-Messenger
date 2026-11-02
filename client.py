@@ -7,7 +7,8 @@ from datetime import datetime
 
 from cryptography.fernet import InvalidToken
 
-from common import KEY_FILE, debug_dump, decode, encode, load_cipher, make_msg, recv_frame, send_frame
+from common import (DEFAULT_PORT, cipher_from_args, debug_dump, decode, discover, encode, make_msg,
+                    recv_frame, send_frame)
 
 
 class ChatClient:
@@ -90,26 +91,41 @@ def format_msg(msg: dict) -> str:
     return f"[{t}] * {msg.get('text', '')}"
 
 
+def join_error(e: OSError, host, port) -> str:
+    """Turn a failed connect/join into a message a user can act on (shared with the GUI)."""
+    if isinstance(e, ConnectionRefusedError):
+        return f"no server at {host}:{port}"
+    if "peer closed" in str(e):
+        return "server closed the connection (wrong password?)"  # it couldn't decrypt our join
+    return str(e)
+
+
 HELP = "commands: <text> broadcast | /msg <user> <text> private | /list | /quit"
 
 
 def cli_main():
     p = argparse.ArgumentParser(description="TCP chat client")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=5050)
+    p.add_argument("--host", help="server address (found automatically on the LAN if omitted)")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--name", help="username (prompted if omitted)")
-    p.add_argument("--key", default=KEY_FILE)
+    p.add_argument("--password", help="room password (prompted if omitted)")
     p.add_argument("--no-encrypt", action="store_true")
     p.add_argument("--debug", action="store_true", help="print raw bytes on the wire")
     a = p.parse_args()
 
+    host, port = a.host, a.port
+    if not host:
+        print("looking for a server on the network...")
+        host, port = discover() or ("127.0.0.1", a.port)
+        print(f"using {host}:{port}")
+    cipher = cipher_from_args(a)
     name = a.name or input("username: ").strip()
-    client = ChatClient(a.host, a.port, name, None if a.no_encrypt else load_cipher(a.key),
-                        on_message=lambda m: print(format_msg(m)), debug=a.debug)
     try:
+        client = ChatClient(host, port, name, cipher,
+                            on_message=lambda m: print(format_msg(m)), debug=a.debug)
         print(format_msg(client.join()))
-    except ConnectionError as e:
-        print(f"! {e}")
+    except OSError as e:  # ConnectionError is a subclass
+        print(f"! {join_error(e, host, port)}")
         return
     print(HELP)
     client.start()

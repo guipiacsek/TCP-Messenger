@@ -6,7 +6,7 @@ import threading
 
 from cryptography.fernet import InvalidToken
 
-from common import (KEY_FILE, debug_dump, decode, encode, generate_key, load_cipher,
+from common import (DEFAULT_PORT, DISCOVERY_PORT, announce, cipher_from_args, debug_dump, decode, encode,
                     make_msg, recv_frame, send_frame)
 
 
@@ -20,7 +20,7 @@ class ClientConn:
 
 
 class ChatServer:
-    def __init__(self, host="0.0.0.0", port=5050, cipher=None, debug=False):
+    def __init__(self, host="0.0.0.0", port=DEFAULT_PORT, cipher=None, debug=False):
         self.cipher = cipher
         self.debug = debug
         self.clients: dict[str, ClientConn] = {}
@@ -136,23 +136,23 @@ class ChatServer:
 def main():
     p = argparse.ArgumentParser(description="Multithreaded TCP chat server")
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=5050)
-    p.add_argument("--key", default=KEY_FILE, help="path to Fernet key file")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--password", help="room password (prompted if omitted); clients must use the same one")
     p.add_argument("--no-encrypt", action="store_true", help="send plaintext JSON (for benchmarking)")
-    p.add_argument("--genkey", action="store_true", help="write a new key file and exit")
+    p.add_argument("--no-announce", action="store_true", help="don't advertise this server on the LAN")
     p.add_argument("--debug", action="store_true", help="print raw bytes on the wire")
     a = p.parse_args()
-    if a.genkey:
-        generate_key(a.key)
-        print(f"wrote {a.key}; copy it to every client machine")
-        return
+    cipher = cipher_from_args(a)
     try:
-        server = ChatServer(a.host, a.port, None if a.no_encrypt else load_cipher(a.key), a.debug)
+        server = ChatServer(a.host, a.port, cipher, a.debug)
     except OSError as e:
         if e.errno != errno.EADDRINUSE:
             raise
         print(f"port {a.port} is already in use (another server running?). Try --port <other>")
         return
+    if not a.no_announce:
+        threading.Thread(target=announce, args=(server.port,), daemon=True).start()
+        print(f"[server] announcing on the LAN (UDP {DISCOVERY_PORT}); clients will find it automatically")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

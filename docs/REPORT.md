@@ -87,6 +87,14 @@ sequenceDiagram
     S->>B: sys "alice left"
 ```
 
+### 3.4 Server discovery (UDP broadcast)
+
+So that users don't have to look up and type the server's IP, the server advertises itself on the LAN:
+
+- A daemon thread sends the 12-byte datagram `TCPMSG <tcp-port>` every 2 seconds to UDP port **5051**, both to `255.255.255.255` and to the subnet's directed broadcast address (for example `192.168.15.255`). macOS refuses the limited broadcast with "No route to host", so the directed broadcast is what actually reaches the LAN there. The subnet is assumed to be a /24, which covers nearly all home and hotspot networks. A copy also goes to `127.0.0.1` for clients on the same machine.
+- A client binds UDP 5051 (with `SO_REUSEADDR`/`SO_REUSEPORT`, so several clients on one machine can listen at once) and takes the sender address of the first valid beacon as the server's IP. If nothing arrives within 3 seconds, the GUI asks the user to type the address.
+- Discovery is a separate, connectionless protocol. Chat traffic still goes only over the TCP connection, and the beacon carries nothing secret.
+
 ## 4. Concurrency
 
 | Shared state | Protection | Why |
@@ -106,7 +114,7 @@ Design choices:
 ### 5.1 Design
 
 - **Algorithm:** Fernet from the `cryptography` library. It uses AES-128-CBC with a random IV per message and HMAC-SHA256 for authentication, and it rejects tampered or wrong-key messages with `InvalidToken`.
-- **Key distribution:** a pre-shared symmetric key (`chat.key`, created with `python server.py --genkey`) is copied to each machine out of band.
+- **Key distribution:** users share a **room password** (said out loud, texted, etc.). Each side derives the same 256-bit Fernet key from it with PBKDF2-HMAC-SHA256 (600,000 iterations, fixed application salt), so no key file has to be copied between machines. The salt is fixed on purpose: every client must arrive at the same key without exchanging anything first. A wrong password produces a different key, so the server cannot decrypt the `join` message and drops the connection.
 - **Pipeline:** `dict → JSON → Fernet.encrypt → frame → socket` on send, and the reverse on receive. The server decrypts each incoming frame to read `type` and `to`, then **re-encrypts** for each recipient. Both broadcast and private messages go through the same path, so both modes are covered with no special cases.
 - `--no-encrypt` disables encryption on both ends, which gives the baseline for the benchmarks.
 - `--debug` prints the raw frame bytes, which shows on screen that only ciphertext travels on the network (this can also be confirmed in Wireshark on port 5050).
@@ -116,8 +124,8 @@ Design choices:
 | Protects against | Does not protect against |
 |---|---|
 | eavesdropping on the Wi-Fi / LAN | the server operator (the server sees plaintext so it can route) |
-| tampering with messages in transit (HMAC) | a leaked `chat.key` (one shared key, no per-user keys) |
-| clients without the key joining | replay of a captured frame (no nonce tracking) |
+| tampering with messages in transit (HMAC) | a leaked or weak room password (one shared key, no per-user keys; a captured session can be brute-forced offline against a weak password) |
+| clients without the password joining | replay of a captured frame (no nonce tracking) |
 | | traffic analysis (frame sizes and timing are visible) |
 
 A production system would use TLS (`ssl.wrap_socket`) or a per-session key exchange (for example ECDH) for forward secrecy, and true end-to-end encryption for private messages.
@@ -177,6 +185,7 @@ _Fill in from `results/rtt_wifi_*.csv`. Run the server on one laptop and `benchm
 
 - framing round trip, including a 100 KB frame that needs many `recv()` calls
 - encryption round trip, ciphertext does not contain the plaintext, and a wrong key is rejected
+- the same password derives the same key on both sides, and a different password is rejected
 - integration test with a live server and 3 clients: the broadcast reaches everyone, the private message reaches only its recipient (and does not leak to the third client), and `/list` is correct
 - a duplicate username is rejected, and a private message to an unknown user returns an error
 

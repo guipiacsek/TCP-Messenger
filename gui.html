@@ -30,7 +30,8 @@
   /* join screen */
   #join { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; justify-content: center; padding: 32px; gap: 14px; text-align: center; }
   #join h1 { font-size: 26px; } #join p { color: var(--muted); font-size: 14px; }
-  #join input { text-align: center; padding: 12px; }
+  #join > * { width: 100%; max-width: 320px; align-self: center; }
+  #join input { flex: none; text-align: center; padding: 12px; }
   #join button { padding: 12px; border-radius: 99px; border: 0; background: var(--blue); color: #fff; font: 600 15px inherit; cursor: pointer; }
   #joinErr { color: var(--red); font-size: 13px; min-height: 18px; }
 </style></head><body>
@@ -38,6 +39,9 @@
   <h1>TCP Messenger</h1>
   <p id="joinInfo">Pick a username to join</p>
   <input id="nameIn" placeholder="username" autocomplete="off" autofocus maxlength="20" aria-label="Username">
+  <input id="passIn" type="password" placeholder="room password" aria-label="Room password">
+  <input id="serverIn" placeholder="searching for a server…" autocomplete="off" aria-label="Server address">
+  <p id="serverInfo"></p>
   <button>Join</button>
   <div id="joinErr" role="alert"></div>
 </form>
@@ -84,12 +88,28 @@
     }
   };
 
+  // pywebview injects the Python API after load and fires this event
+  window.addEventListener("pywebviewready", async () => {
+    const s = await api().setup();
+    encrypted = s.encrypted;
+    if (!encrypted) passIn.remove();
+    if (s.server) { serverIn.value = s.server; return; }
+    serverInfo.textContent = "Searching the network…";
+    const found = await api().discover();
+    if (serverIn.value) return;  // user typed one meanwhile
+    serverIn.value = found || "";
+    serverIn.placeholder = "server IP, e.g. 192.168.1.20";
+    serverInfo.textContent = found ? "Found a server on the network" : "No server found. Type the server's IP address";
+  });
+
   join.onsubmit = async e => {
     e.preventDefault();
     const name = nameIn.value.trim();
     if (!name || /\s/.test(name)) { joinErr.textContent = "Username can't be empty or contain spaces"; return; }
+    if (encrypted && !passIn.value) { joinErr.textContent = "Enter the room password"; return; }
+    if (!serverIn.value.trim()) { joinErr.textContent = "Enter the server address (e.g. 192.168.1.20)"; return; }
     joinErr.textContent = "Connecting…";
-    const r = await api().join(name);
+    const r = await api().join(name, passIn.value, serverIn.value);
     if (!r.ok) { joinErr.textContent = r.error; return; }
     me = r.name; encrypted = r.encrypted;
     join.remove(); add("sys", `Connected to ${r.server} as ${me}`); t.focus();

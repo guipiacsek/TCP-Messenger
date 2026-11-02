@@ -6,7 +6,7 @@ import unittest
 from cryptography.fernet import Fernet, InvalidToken
 
 from client import ChatClient
-from common import decode, encode, make_msg, recv_frame, send_frame
+from common import cipher_from_password, decode, encode, make_msg, recv_frame, send_frame
 from server import ChatServer
 
 CIPHER = Fernet(Fernet.generate_key())
@@ -25,6 +25,12 @@ class ProtocolTest(unittest.TestCase):
         payload = encode(msg, CIPHER)
         self.assertNotIn(b"secret", payload)
         self.assertEqual(decode(payload, CIPHER), msg)
+
+    def test_password_derives_shared_key(self):
+        payload = encode(make_msg("msg", text="x"), cipher_from_password("hunter2"))
+        self.assertEqual(decode(payload, cipher_from_password("hunter2"))["text"], "x")
+        with self.assertRaises(InvalidToken):
+            decode(payload, cipher_from_password("hunter3"))
 
     def test_wrong_key_rejected(self):
         payload = encode(make_msg("msg", text="x"), CIPHER)
