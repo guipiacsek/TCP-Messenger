@@ -87,7 +87,7 @@ def save_csv(path, rows):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="remote server (omit to benchmark on localhost)")
-    p.add_argument("--port", type=int, default=5000)
+    p.add_argument("--port", type=int, default=5050)
     p.add_argument("--key", default=KEY_FILE)
     p.add_argument("--no-encrypt", action="store_true", help="remote server runs with --no-encrypt")
     p.add_argument("-n", type=int, default=1000, help="iterations per size")

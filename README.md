@@ -33,7 +33,7 @@ python gui.py
 ## Run over Wi-Fi
 
 1. On the server machine, find its LAN IP (macOS: `ipconfig getifaddr en0`, Linux: `hostname -I`, Windows: `ipconfig`).
-2. Start `python server.py`, which listens on `0.0.0.0:5000` by default. Allow Python through the firewall if your OS asks.
+2. Start `python server.py`, which listens on `0.0.0.0:5050` by default. Allow Python through the firewall if your OS asks.
 3. On each other machine (same network, with the same `chat.key`), run `python client.py --host <server-ip> --name <you>`.
 
 ## Client commands
@@ -52,7 +52,7 @@ python gui.py
 | `--no-encrypt` | server and client | plaintext JSON (both sides must match). Used for benchmarking |
 | `--debug` | server and client | print the raw bytes of each frame, which shows the ciphertext on the wire |
 | `--key PATH` | server and client | use another key file |
-| `--host`, `--port` | server and client | address (default `0.0.0.0` / `127.0.0.1`, port `5000`) |
+| `--host`, `--port` | server and client | address (default `0.0.0.0` / `127.0.0.1`, port `5050`) |
 
 ## Tests and benchmarks
 

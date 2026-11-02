@@ -1,5 +1,6 @@
 """Multithreaded TCP chat server: one thread per client, broadcast + private messages."""
 import argparse
+import errno
 import socket
 import threading
 
@@ -19,7 +20,7 @@ class ClientConn:
 
 
 class ChatServer:
-    def __init__(self, host="0.0.0.0", port=5000, cipher=None, debug=False):
+    def __init__(self, host="0.0.0.0", port=5050, cipher=None, debug=False):
         self.cipher = cipher
         self.debug = debug
         self.clients: dict[str, ClientConn] = {}
@@ -135,7 +136,7 @@ class ChatServer:
 def main():
     p = argparse.ArgumentParser(description="Multithreaded TCP chat server")
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=5000)
+    p.add_argument("--port", type=int, default=5050)
     p.add_argument("--key", default=KEY_FILE, help="path to Fernet key file")
     p.add_argument("--no-encrypt", action="store_true", help="send plaintext JSON (for benchmarking)")
     p.add_argument("--genkey", action="store_true", help="write a new key file and exit")
@@ -145,7 +146,13 @@ def main():
         generate_key(a.key)
         print(f"wrote {a.key}; copy it to every client machine")
         return
-    server = ChatServer(a.host, a.port, None if a.no_encrypt else load_cipher(a.key), a.debug)
+    try:
+        server = ChatServer(a.host, a.port, None if a.no_encrypt else load_cipher(a.key), a.debug)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        print(f"port {a.port} is already in use (another server running?). Try --port <other>")
+        return
     try:
         server.serve_forever()
     except KeyboardInterrupt:

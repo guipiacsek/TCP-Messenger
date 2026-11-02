@@ -56,7 +56,7 @@ class Api:
 def main():
     p = argparse.ArgumentParser(description="TCP chat desktop GUI")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=5000)
+    p.add_argument("--port", type=int, default=5050)
     p.add_argument("--key", default=KEY_FILE)
     p.add_argument("--no-encrypt", action="store_true")
     a = p.parse_args()

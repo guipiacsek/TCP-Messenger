@@ -10,7 +10,7 @@ Terminal 1:
 ```bash
 python server.py --debug
 ```
-Point out "listening on port 5000 (encryption ON)".
+Point out "listening on port 5050 (encryption ON)".
 
 ## 3. Connect three clients (30 s)
 Terminals 2–4:
@@ -33,7 +33,7 @@ Show the "joined the chat" notices appearing in the other windows. That's the se
 
 ## 6. Encryption (60 s)
 - Point at the server's `--debug` output: each frame starts with `gAAAAA...`, the Fernet token, which shows ciphertext only.
-- Optional: open Wireshark on loopback with the filter `tcp.port == 5000` and follow the TCP stream. It's unreadable.
+- Optional: open Wireshark on loopback with the filter `tcp.port == 5050` and follow the TCP stream. It's unreadable.
 - Restart one client with the wrong key to show it gets rejected: `python client.py --name eve --key other.key` (create it first with `python server.py --genkey --key other.key`).
 
 ## 7. Disconnect handling (20 s)

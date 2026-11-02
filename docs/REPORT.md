@@ -109,7 +109,7 @@ Design choices:
 - **Key distribution:** a pre-shared symmetric key (`chat.key`, created with `python server.py --genkey`) is copied to each machine out of band.
 - **Pipeline:** `dict → JSON → Fernet.encrypt → frame → socket` on send, and the reverse on receive. The server decrypts each incoming frame to read `type` and `to`, then **re-encrypts** for each recipient. Both broadcast and private messages go through the same path, so both modes are covered with no special cases.
 - `--no-encrypt` disables encryption on both ends, which gives the baseline for the benchmarks.
-- `--debug` prints the raw frame bytes, which shows on screen that only ciphertext travels on the network (this can also be confirmed in Wireshark on port 5000).
+- `--debug` prints the raw frame bytes, which shows on screen that only ciphertext travels on the network (this can also be confirmed in Wireshark on port 5050).
 
 ### 5.2 Security properties and limits
 
