@@ -2,6 +2,7 @@
 A GUI can reuse ChatClient by passing its own on_message callback."""
 import argparse
 import base64
+import io
 import json
 import os
 import socket
@@ -46,6 +47,7 @@ class ChatClient:
         self.download_dir = download_dir
         self.sock = None
         self.cipher = None
+        self.web_port = None  # set from hello when the server also serves the phone web client
         self.connected = False
         self.closing = False
         self._send_lock = threading.Lock()  # UI, heartbeat and file threads all send
@@ -68,6 +70,7 @@ class ChatClient:
                 raise JoinRejected("encryption mismatch: start both sides with or without --no-encrypt",
                                    "bad_password")
             salt = hello["salt"]
+            self.web_port = hello.get("web_port")
             cipher = cipher_from_password(self.password, base64.b64decode(salt)) if salt else None
             with self._send_lock:
                 self.sock, self.cipher = sock, cipher
@@ -104,11 +107,15 @@ class ChatClient:
 
     # --- sending -----------------------------------------------------------------------
 
-    def broadcast(self, text: str) -> str:
-        return self._send_tracked(make_msg("msg", id=_new_id(), text=text))
+    def broadcast(self, text: str, reply_to: dict | None = None) -> str:
+        return self._send_tracked(make_msg("msg", id=_new_id(), text=text, **_reply(reply_to)))
 
-    def private(self, to: str, text: str) -> str:
-        return self._send_tracked(make_msg("pm", id=_new_id(), to=to, text=text))
+    def private(self, to: str, text: str, reply_to: dict | None = None) -> str:
+        return self._send_tracked(make_msg("pm", id=_new_id(), to=to, text=text, **_reply(reply_to)))
+
+    def react(self, target_id: str, emoji: str, to: str | None = None):
+        """Toggle a reaction on message target_id; to = the private chat it's in, if any."""
+        self._send(make_msg("react", id=target_id, emoji=emoji, **({"to": to} if to else {})))
 
     def typing(self, to: str | None = None):
         self._send(make_msg("typing", to=to) if to else make_msg("typing"))
@@ -118,20 +125,25 @@ class ChatClient:
 
     def send_file(self, path: str, to: str | None = None) -> str:
         """Validates now, streams in a background thread; progress arrives as file_progress events."""
-        size = os.path.getsize(path)
+        return self._start_stream(os.path.basename(path), os.path.getsize(path), lambda: open(path, "rb"), to)
+
+    def send_data(self, name: str, data: bytes, to: str | None = None) -> str:
+        """Like send_file, for bytes the UI already holds (drag and drop, phone uploads)."""
+        return self._start_stream(name, len(data), lambda: io.BytesIO(data), to)
+
+    def _start_stream(self, name, size, opener, to):
         if size > MAX_FILE:
-            raise ValueError(f"file is {size // 1024 // 1024} MB; the limit is {MAX_FILE // 1024 // 1024} MB")
+            raise ValueError(f"file is {size / 2**20:.1f} MB; the limit is {MAX_FILE // 2**20} MB")
         fid = _new_id()
-        threading.Thread(target=self._stream_file, args=(path, size, to, fid), daemon=True).start()
+        threading.Thread(target=self._stream_file, args=(name, size, opener, to, fid), daemon=True).start()
         return fid
 
-    def _stream_file(self, path, size, to, fid):
+    def _stream_file(self, name, size, opener, to, fid):
         route = {"to": to} if to else {}
-        name = os.path.basename(path)
         try:
             self._send_tracked(make_msg("file_start", id=fid, name=name, size=size, **route))
             sent = 0
-            with open(path, "rb") as f:
+            with opener() as f:
                 while chunk := f.read(CHUNK):
                     # one frame per chunk: chat messages from other threads slot in between
                     self._send(make_msg("file_chunk", id=fid, data=base64.b64encode(chunk).decode(), **route))
@@ -285,14 +297,25 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _reply(reply_to: dict | None) -> dict:
+    """Replies carry a short quote of the original, so they render even if it scrolled away."""
+    if not reply_to:
+        return {}
+    return {"reply_to": {"id": str(reply_to.get("id", "")), "from": str(reply_to.get("from", "")),
+                         "text": str(reply_to.get("text", ""))[:120]}}
+
+
 def format_msg(msg: dict, debug=False) -> str | None:
     """One line for the terminal, or None for events the terminal doesn't show."""
     t = datetime.fromtimestamp(msg.get("ts", 0)).strftime("%H:%M:%S")
     kind = msg["type"]
+    quote = f"↪ {msg['reply_to'].get('from')}: \"{msg['reply_to'].get('text', '')[:40]}\" " if msg.get("reply_to") else ""
     if kind == "msg":
-        return f"[{t}] {msg['from']}: {msg['text']}"
+        return f"[{t}] {msg['from']}: {quote}{msg['text']}"
     if kind == "pm":
-        return f"[{t}] (private) {msg['from']} -> you: {msg['text']}"
+        return f"[{t}] (private) {msg['from']} -> you: {quote}{msg['text']}"
+    if kind == "react":
+        return f"[{t}] * {msg['from']} reacted {msg.get('emoji', '')}"
     if kind == "list":
         return f"[{t}] online: {', '.join(msg['users'])}"
     if kind == "error":

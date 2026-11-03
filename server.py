@@ -3,6 +3,7 @@ import argparse
 import base64
 import errno
 import hashlib
+import hmac
 import os
 import queue
 import socket
@@ -13,12 +14,13 @@ from collections import defaultdict, deque
 from cryptography.fernet import InvalidToken
 
 from common import (DEFAULT_PORT, DISCOVERY_PORT, IDLE_TIMEOUT, JOIN_TIMEOUT, MAX_CLIENTS,
-                    PROTOCOL_VERSION, SEND_QUEUE_MAX, TOKEN_TTL, announce, cipher_from_password,
+                    PROTOCOL_VERSION, SEND_QUEUE_MAX, TOKEN_TTL, _derive, announce, cipher_from_password,
+                    local_ip,
                     debug_dump, decode, encode, make_msg, password_from_args, plain, recv_frame,
                     send_frame)
 
 # forwarded with "from" set by the server: to the "to" user if present, else to everyone else
-ROUTED = {"msg", "pm", "typing", "ack", "file_start", "file_chunk", "file_end"}
+ROUTED = {"msg", "pm", "typing", "ack", "react", "file_start", "file_chunk", "file_end"}
 MAX_FAILED_JOINS = 5      # bad-password joins per IP within FAIL_WINDOW before it's blocked
 FAIL_WINDOW = 60
 
@@ -49,6 +51,7 @@ class ChatServer:
                  idle_timeout=IDLE_TIMEOUT, join_timeout=JOIN_TIMEOUT, max_clients=MAX_CLIENTS):
         self.salt = os.urandom(16) if password is not None else None
         self.cipher = cipher_from_password(password, self.salt) if password is not None else None
+        self._key = _derive(password, self.salt) if password is not None else None
         self.debug = debug
         self.idle_timeout, self.join_timeout, self.max_clients = idle_timeout, join_timeout, max_clients
         self.clients: dict[str, ClientConn] = {}  # joined clients by name
@@ -65,6 +68,7 @@ class ChatServer:
         self.sock.listen()
         self.port = self.sock.getsockname()[1]  # real port when bound to 0 (tests)
         self.running = True
+        self.web_port = None  # set by WebBridge so clients can build the phone invite link
 
     def serve_forever(self):
         print(f"[server] listening on port {self.port} (encryption {'ON' if self.cipher else 'OFF'})")
@@ -83,6 +87,10 @@ class ChatServer:
                 self.conns.add(conn)
             threading.Thread(target=self.writer, args=(conn,), daemon=True).start()
             threading.Thread(target=self.handle, args=(conn,), daemon=True).start()
+
+    def check_password(self, password: str) -> bool:
+        """For the web bridge, which has to vet phones before connecting them over loopback."""
+        return self._key is not None and hmac.compare_digest(_derive(password, self.salt), self._key)
 
     def refuse_reason(self, ip) -> tuple[str, str] | None:
         if self.blocked.get(ip, 0) > time.time():
@@ -165,7 +173,7 @@ class ChatServer:
         try:
             conn.sock.settimeout(self.join_timeout)
             salt = base64.b64encode(self.salt).decode() if self.salt else None
-            self.enqueue(conn, plain(make_msg("hello", v=PROTOCOL_VERSION, salt=salt)))
+            self.enqueue(conn, plain(make_msg("hello", v=PROTOCOL_VERSION, salt=salt, web_port=self.web_port)))
             if not self.register(conn):
                 return
             conn.sock.settimeout(self.idle_timeout)  # clients ping every few seconds
@@ -265,6 +273,7 @@ def main():
     p.add_argument("--password", help="room password (prompted if omitted); clients must use the same one")
     p.add_argument("--no-encrypt", action="store_true", help="send plaintext JSON (for benchmarking)")
     p.add_argument("--no-announce", action="store_true", help="don't advertise this server on the LAN")
+    p.add_argument("--no-web", action="store_true", help="don't serve the phone/browser client")
     p.add_argument("--debug", action="store_true", help="print raw bytes on the wire")
     a = p.parse_args()
     password = password_from_args(a)
@@ -275,6 +284,16 @@ def main():
             raise
         print(f"port {a.port} is already in use (another server running?). Try --port <other>")
         return
+    if not a.no_web:
+        from web import WEB_PORT_OFFSET, WebBridge  # lazy: only the web client needs it
+        try:
+            bridge = WebBridge(server, server.port + WEB_PORT_OFFSET, a.host)
+        except OSError as e:
+            print(f"[server] phone access off: port {server.port + WEB_PORT_OFFSET} unavailable ({e.strerror})")
+        else:
+            threading.Thread(target=bridge.serve_forever, daemon=True).start()
+            print(f"[server] phones: https://{local_ip() or 'localhost'}:{bridge.port} "
+                  f"(certificate SHA-256 {bridge.fingerprint[:23]}...)")
     if not a.no_announce:
         threading.Thread(target=announce, args=(server.port,), daemon=True).start()
         print(f"[server] announcing on the LAN (UDP {DISCOVERY_PORT}); clients will find it automatically")

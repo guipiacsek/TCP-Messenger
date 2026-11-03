@@ -2,28 +2,27 @@
 import argparse
 import base64
 import json
-import mimetypes
 import os
 import subprocess
 import sys
+import urllib.parse
 
+import qrcode
+import qrcode.image.svg
 import webview
 
-from client import DOWNLOAD_DIR, ChatClient, join_error
-from common import DEFAULT_PORT, MIN_PASSWORD, discover
-
-PREVIEW_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}  # no SVG: it can carry script
-PREVIEW_MAX = 5 * 1024 * 1024
+from client import DOWNLOAD_DIR
+from common import DEFAULT_PORT, MIN_PASSWORD, discover, local_ip
+from web import ClientSession, preview
 
 
-class Api:
+class Api(ClientSession):
     """Methods here are callable from JavaScript as window.pywebview.api.<name>().
     Attributes start with _ so pywebview doesn't expose them to JS."""
 
     def __init__(self, server, encrypt):
+        super().__init__(encrypt)
         self._server = server  # "host:port" from --host, or None to discover
-        self._encrypt = encrypt
-        self._client = None
         self._window = None
 
     def setup(self):
@@ -34,45 +33,21 @@ class Api:
         return f"{found[0]}:{found[1]}" if found else None
 
     def join(self, name, password, server):
-        name = name.strip()
         host, _, port = server.strip().partition(":")
-        port = int(port) if port.isdigit() else DEFAULT_PORT
-        if self._encrypt and len(password) < MIN_PASSWORD:
-            return {"ok": False, "error": f"password must be at least {MIN_PASSWORD} characters"}
-        client = ChatClient(host, port, name, password if self._encrypt else None, on_message=self._push)
-        try:
-            client.join()
-        except OSError as e:  # ConnectionError and JoinRejected are subclasses
-            return {"ok": False, "error": join_error(e, host, port)}
-        self._client = client
-        client.start()
-        client.list_users()
-        return {"ok": True, "name": name, "server": f"{host}:{port}", "encrypted": self._encrypt}
+        return self._connect(host, int(port) if port.isdigit() else DEFAULT_PORT, name, password, DOWNLOAD_DIR)
 
-    # each returns the message id, or None if it couldn't be sent (e.g. while reconnecting)
-    def broadcast(self, text):
-        return self._try(self._client.broadcast, text)
-
-    def private(self, to, text):
-        return self._try(self._client.private, to, text)
-
-    def typing(self, to):
-        self._try(self._client.typing, to)
-
-    def list_users(self):
-        self._try(self._client.list_users)
-
-    def send_file(self, to):
-        paths = self._window.create_file_dialog(webview.FileDialog.OPEN)
-        if not paths:
+    def invite(self):
+        """A QR code phones can scan to open the web client, password included."""
+        if not self._client or not self._client.web_port:
             return None
-        path = paths[0]
-        try:
-            fid = self._client.send_file(path, to or None)
-        except (OSError, ValueError) as e:
-            return {"error": str(e)}
-        return {"id": fid, "name": os.path.basename(path), "size": os.path.getsize(path),
-                "image": _preview(path)}
+        host = self._client.host
+        if host in ("127.0.0.1", "localhost"):  # the phone needs our LAN address, not loopback
+            host = local_ip() or host
+        # the password rides in the #fragment, which browsers never send over the network
+        fragment = "#" + urllib.parse.urlencode({"pw": self._password}) if self._password else ""
+        url = f"https://{host}:{self._client.web_port}/{fragment}"
+        svg = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, border=1).to_string()
+        return {"url": url, "qr": "data:image/svg+xml;base64," + base64.b64encode(svg).decode()}
 
     def reveal(self, path):
         # only files we saved ourselves; the path comes back from the page, so don't trust it blindly
@@ -97,30 +72,12 @@ class Api:
         label = str(count) if count else ""
         AppHelper.callAfter(lambda: NSApp.dockTile().setBadgeLabel_(label))  # AppKit is main-thread only
 
-    def _try(self, fn, *args):
-        try:
-            return fn(*args)
-        except OSError:
-            return None
-
     def _push(self, msg):
         if msg["type"] == "file_saved":
-            msg["image"] = _preview(msg["path"])
+            with open(msg["path"], "rb") as f:
+                msg["image"] = preview(msg["path"], f.read())
         # called on ChatClient's threads; evaluate_js is thread-safe
         self._window.evaluate_js(f"onMessage({json.dumps(msg)})")
-
-    def _close(self):
-        if self._client:
-            self._client.close()
-
-
-def _preview(path) -> str | None:
-    """A data: URL for small images so the page can show them inline, else None."""
-    mime = mimetypes.guess_type(path)[0]
-    if mime not in PREVIEW_TYPES or os.path.getsize(path) > PREVIEW_MAX:
-        return None
-    with open(path, "rb") as f:
-        return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
 
 
 def _open(args):

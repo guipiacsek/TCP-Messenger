@@ -1,4 +1,4 @@
-# Video demo script (about 7 minutes)
+# Video demo script (about 8 minutes)
 
 **Setup before recording:**
 - Pick a room password of at least 8 characters (e.g. `pizza123`).
@@ -30,22 +30,28 @@ Point out "announcing on the LAN" and "listening on port 5050 (encryption ON)".
 - On alice's screen it lands in the **bob** thread with an unread badge, not in Everyone. carol sees nothing.
 - With alice's window in the background, send another. A desktop notification and a Dock badge appear.
 
-## 6. File sharing (45 s)
-- alice opens carol's thread, clicks 📎 and picks an image. A progress bar fills, and the image shows inline on both sides.
+## 6. A phone joins (45 s)
+- In alice's window, click **📱**. Scan the QR code with a phone.
+- Tap through the one-time certificate warning, type `dave`, and join. The password came in the QR code.
+- dave chats with the laptops: send a message, react with ❤️ to alice's message, reply to bob's.
+- Point out: no app to install, the same interface as the desktop, and it's still encrypted (HTTPS to the server, Fernet between laptops).
+
+## 7. File sharing (45 s)
+- alice opens carol's thread and drags an image into the window (or clicks 📎). A progress bar fills, and the image shows inline on both sides.
 - carol clicks **Show in Finder**: the file is in `~/Downloads/TCP Messenger/`.
 - Optional: send a few MB and keep chatting at the same time. The messages interleave with the file chunks.
 
-## 7. Encryption and security (60 s)
+## 8. Encryption and security (60 s)
 - Point at the server's `--debug` output: every frame is a `gAAAAA...` Fernet token, including file chunks.
 - Optional: open Wireshark on loopback with the filter `tcp.port == 5050` and follow the TCP stream. It's unreadable.
 - Open another GUI as `eve` with a wrong password. It's rejected. Mention that 5 wrong tries block the IP for a minute.
 - Explain replay protection briefly (60 s token lifetime plus the server's cache of frames it has seen).
 
-## 8. Resilience (45 s)
+## 9. Resilience (45 s)
 - Stop the server with Ctrl+C. All windows show the amber **Reconnecting…** banner.
 - Start it again. Within a second or two the windows reconnect by themselves, and the chat continues even though the new server run uses a new salt and key.
 
-## 9. Benchmarks (60 s)
+## 10. Benchmarks (60 s)
 ```bash
 python3 benchmark.py
 ```

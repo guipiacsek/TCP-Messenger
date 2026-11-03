@@ -12,6 +12,8 @@ TCP Messenger is a client–server chat application built directly on Python's `
 On top of that, all traffic in both chat modes is **encrypted on the wire**. We measured the processing overhead and the latency it adds, on local loopback and over a real Wi-Fi network.
 
 The application also supports:
+- phones joining by QR code through a mobile web version, served over HTTPS with a WebSocket implemented from scratch
+- replies and emoji reactions
 - file and image sharing, streamed in chunks over the same connection
 - delivery receipts with measured delivery latency
 - typing indicators
@@ -83,6 +85,7 @@ The payload is a JSON object. The `hello` frame and handshake errors are sent in
 | `pm` | C→S→C | `id`, `to`, `text` | private message |
 | `ack` | C→S→C | `id`, `to` | receipt sent back to the original sender |
 | `typing` | C→S→C | `to?` | typing indicator |
+| `react` | C→S→C | `id`, `emoji`, `to?` | toggle a reaction on message `id` |
 | `file_start` / `file_chunk` / `file_end` | C→S→C | `id`, `to?`, `name`, `size` / `data` (base64) | file transfer |
 | `ping` / `pong` | C→S / S→C | n/a | heartbeat |
 | `list` | C→S, S→C | `users` | request / reply with online users |
@@ -90,9 +93,9 @@ The payload is a JSON object. The `hello` frame and handshake errors are sent in
 | `error` | S→C | `code?`, `text` | `bad_password`, `name_taken`, `invalid_name`, `full`, `blocked`, unknown recipient |
 | `quit` | C→S | n/a | clean disconnect |
 
-Every message carries a `ts` timestamp.
+Every message carries a `ts` timestamp. A reply is an ordinary `msg` or `pm` with an extra `reply_to: {id, from, text}` field. The quoted text is capped at 120 characters and travels with the reply, so it still displays if the original has scrolled away or arrived before the recipient joined.
 
-**Generic routing:** for every routed type (`msg`, `pm`, `ack`, `typing`, `file_*`), the server sets `from` itself from the authenticated connection, so nobody can claim another user's name. It then delivers the message to the `to` user if one is given, and to everyone else otherwise. This single rule covers broadcast and private chat, receipts, typing and file transfer, so adding a message type needs no new server code.
+**Generic routing:** for every routed type (`msg`, `pm`, `ack`, `typing`, `file_*`), the server sets `from` itself from the authenticated connection, so nobody can claim another user's name. It then delivers the message to the `to` user if one is given, and to everyone else otherwise. This single rule covers broadcast and private chat, receipts, typing, reactions and file transfer. Reactions were added later with a one-word server change (adding `react` to the routed set), and replies needed no server change at all.
 
 ### 3.3 Session flow
 
@@ -160,6 +163,47 @@ A TCP connection whose peer disappears (Wi-Fi drops, laptop sleeps) can look ope
 - The sender timestamps every outgoing id with `time.monotonic()`. When the `ack` arrives, it computes the **delivery latency**: alice → server → bob → server → alice, which is two one-way trips plus bob's processing. The GUI shows ✓ when a message is sent and ✓✓ once it's delivered. For a broadcast, the tooltip lists who received it and the latency.
 - Typing indicators are sent at most once every 3 s while the user types, and the receiving side hides them after 4 s.
 
+### 3.8 Phones: the web bridge
+
+Phones join without installing anything: the chat server also runs an HTTPS server, normally on the chat port + 2 (5052), and the desktop app's 📱 button shows a QR code for it.
+
+```mermaid
+flowchart LR
+    P[Phone browser<br/>gui.html + web.js] -- "HTTPS / WSS (TLS)" --> W[web.py<br/>WebSession per tab]
+    W -- "ChatClient over loopback<br/>TCP + Fernet" --> S[ChatServer]
+    D[Desktop app] -- TCP + Fernet --> S
+```
+
+**One interface for both.**
+- The phone loads the **same `gui.html`** as the desktop app. The desktop app gives that page `window.pywebview.api`, whose calls go to Python.
+- In a browser, `web.js` provides an object with the same interface whose calls travel as JSON RPC over a WebSocket.
+- On the server, each browser tab gets a `WebSession`: an ordinary `ChatClient` connected to the chat server over `127.0.0.1`. Both `WebSession` and the desktop's `Api` build on one shared `ClientSession` class.
+- So phones get every feature (threads, files, receipts, reactions, reconnection) with no phone-specific chat code, and the chat server doesn't know phones exist.
+
+**WebSocket, implemented from scratch (RFC 6455)** in about 80 lines of the standard library:
+- the HTTP `Upgrade` handshake, with `Sec-WebSocket-Accept = base64(SHA-1(key + GUID))`;
+- frame parsing with 7-, 16- and 64-bit lengths;
+- client masking, which the server *requires* (an unmasked frame closes the connection);
+- reassembling fragmented messages, and answering pings that arrive between fragments. A unit test caught an early version dropping the partial message in that case;
+- close and pong frames, and a 16 MB message limit.
+
+Unmasking uses a single big-integer XOR, so a 10 MB upload isn't a Python loop over every byte.
+
+**TLS with a self-signed certificate.**
+- At startup the server generates an ECDSA P-256 certificate valid for its LAN IP and `localhost`, and prints its SHA-256 fingerprint.
+- A home network has no certificate authority, so phones show a one-time warning. After that, everything between phone and server is encrypted with TLS 1.2+.
+- The private key only touches disk inside a mode-0600 temporary file for the instant it's loaded.
+- The TLS handshake runs in the per-connection thread rather than in `accept()`, so a slow or plain-HTTP client can't stall the server.
+
+**Security details.**
+- **Invite link:** the QR code is `https://<ip>:5052/#pw=<password>`. The part after `#` is never sent over the network by browsers, so the password doesn't appear in any request or log. `web.js` copies it into the form and then removes it from the address bar.
+- **Cross-site WebSocket hijacking:** the handshake is refused unless `Origin` equals the page's own `https://host`, so a malicious website open on the same phone can't talk to the bridge.
+- **Rate limiting per phone:** every phone reaches the chat server from `127.0.0.1`, so the server's per-IP limit would treat all phones as one. The bridge therefore checks the password itself, against the phone's real IP. It uses a constant-time comparison of the derived keys, and wrong attempts count toward that IP's block.
+- **Files:** files a phone receives stay in a per-session temporary folder on the server and are offered at an unguessable `/files/<128-bit token>/name` URL. The server's file paths never reach the browser, and a session's files are deleted when it ends.
+- **Liveness:** the browser sends a keepalive every 10 s. A tab silent for 30 s (phone locked) is closed, which also removes its ghost user. `web.js` then reconnects and rejoins with the same name when the phone wakes up.
+
+**Trust model:** the bridge runs inside the server process, which already sees plaintext in order to route. The phone path is therefore TLS from phone to server, then the same Fernet path as everyone else. Phones don't widen what the server can see.
+
 ## 4. Concurrency
 
 | Shared state | Protection | Why |
@@ -217,6 +261,7 @@ This requires the clocks of the machines involved to be within about 60 s of eac
 | clients without the password; online password guessing (rate limit) | traffic analysis (frame sizes and timing are visible) |
 | impersonation through a spoofed `from` (the server sets it) | distributed guessing from many IPs |
 | path traversal or overwriting via received filenames | malicious file *contents* (files are saved, never opened) |
+| eavesdropping on phones (TLS); other websites driving the bridge (Origin check) | a phone user accepting a fake certificate from an attacker on the Wi-Fi at first use, though comparing the fingerprint the server prints prevents this |
 | one slow or malicious client stalling others; connection floods (cap, timeouts) | |
 
 ## 6. Performance evaluation
@@ -292,7 +337,7 @@ _Fill in from `results/*_wifi_*.csv`. Run `server.py` on one laptop, then `bench
 
 ## 7. Testing
 
-`test_chat.py` has 19 tests, run with `python3 -m unittest -v test_chat.py`. Integration tests run a real server in-process with short timeouts.
+`test_chat.py` has 28 tests, run with `python3 -m unittest -v test_chat.py`. Integration tests run a real server (and web bridge) in-process with short timeouts.
 
 - **Protocol:**
   - framing round trip, including a 100 KB frame split across many `recv()` calls
@@ -321,9 +366,19 @@ _Fill in from `results/*_wifi_*.csv`. Run `server.py` on one laptop, then `bench
   - typing reaches only its target
   - a client reconnects on its own after its connection is killed
   - a wrong password stops the reconnect loop
+  - replies carry a capped quote, and reactions route to the right person
+- **WebSocket and phones** (a hand-written TLS + WebSocket client acting as the phone):
+  - masked frames with every length encoding, fragmented messages with a ping in between, and unmasked frames rejected
+  - the page is served with the bridge script, and unknown file tokens get a 404
+  - a cross-origin WebSocket is refused (403)
+  - phone password checks and rate limiting by the phone's IP
+  - a phone chats with a desktop client: messages, a private reply, a reaction and receipts
+  - files both ways: phone → desktop byte-identical; desktop → phone through a token URL, with no server path exposed
 
 Manual testing:
 - GUI and terminal clients on loopback.
+- The phone layout at 375 px in light and dark mode, driving the real `web.js`.
+- A scripted native window: a reaction, a reply, a dropped file and the invite QR code.
 - A scripted run of the native GUI window.
 - A server restart while clients are connected: the clients reconnect in about 0.6 s with the new salt.
 
@@ -333,4 +388,5 @@ Manual testing:
 - End-to-end encryption for private messages, so the server can't read them
 - Chat history and offline delivery
 - Binary file frames to avoid double base64
+- Browser notifications for phones (needs a trusted certificate)
 - Replacing thread-per-client with `selectors`/`asyncio` to scale to thousands of clients

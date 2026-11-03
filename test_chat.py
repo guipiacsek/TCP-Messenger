@@ -1,8 +1,12 @@
 import base64
+import http.client
+import io
 import json
 import os
 import queue
 import socket
+import ssl
+import struct
 import tempfile
 import threading
 import time
@@ -13,6 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from client import ChatClient, JoinRejected, safe_filename, save_download
 from common import cipher_from_password, decode, encode, make_msg, recv_frame, send_frame
 from server import ChatServer
+from web import WebBridge, ws_read_message
 
 PASSWORD = "correct horse"
 CIPHER = Fernet(Fernet.generate_key())
@@ -247,6 +252,19 @@ class ChatTest(unittest.TestCase):
         alice.private("bob", "back")
         self.assertEqual(self.next_of(b_in, "pm")["text"], "back")
 
+    def test_reply_and_reaction(self):
+        alice, a_in = self.connect("alice")
+        bob, b_in = self.connect("bob")
+        mid = alice.broadcast("lunch?")
+        msg = self.next_of(b_in, "msg")
+        bob.broadcast("yes!", reply_to={"id": mid, "from": "alice", "text": "lunch?" * 100})
+        reply = self.next_of(a_in, "msg")
+        self.assertEqual((reply["reply_to"]["id"], reply["reply_to"]["from"]), (mid, "alice"))
+        self.assertEqual(len(reply["reply_to"]["text"]), 120)  # quote is capped
+        bob.react(msg["id"], "👍", to="alice")
+        r = self.next_of(a_in, "react")
+        self.assertEqual((r["id"], r["emoji"], r["from"]), (mid, "👍", "bob"))
+
     def test_reconnect_stops_on_wrong_password(self):
         alice, a_in = self.connect("alice")
         alice.password = "changed password"
@@ -254,6 +272,162 @@ class ChatTest(unittest.TestCase):
         self.assertEqual(self.next_of(a_in, "error", timeout=5)["text"], "wrong password")
         self.assertEqual(self.next_of(a_in, "status")["state"], "offline")
 
+
+
+def masked_frame(payload: bytes, opcode=0x1, fin=True) -> bytes:
+    mask = os.urandom(4)
+    n = len(payload)
+    head = bytes([(0x80 if fin else 0) | opcode])
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 1 << 16:
+        head += bytes([0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+class WebSocketTest(unittest.TestCase):
+    def test_masked_frames_of_every_length_size(self):
+        for payload in (b"", b"hi", b"x" * 300, os.urandom(70_000)):
+            self.assertEqual(ws_read_message(io.BytesIO(masked_frame(payload))), (0x1, payload))
+
+    def test_fragmented_message_with_ping_in_between(self):
+        stream = io.BytesIO(masked_frame(b"hel", fin=False) + masked_frame(b"!", opcode=0x9)
+                            + masked_frame(b"lo", opcode=0x0))
+        pings = []
+        self.assertEqual(ws_read_message(stream, on_ping=pings.append), (0x1, b"hello"))
+        self.assertEqual(pings, [b"!"])
+
+    def test_unmasked_client_frame_rejected(self):
+        with self.assertRaises(ConnectionError):
+            ws_read_message(io.BytesIO(bytes([0x81, 0x02]) + b"hi"))
+
+
+class WebBridgeTest(unittest.TestCase):
+    def setUp(self):
+        self.server = ChatServer("127.0.0.1", 0, PASSWORD, idle_timeout=1.5, join_timeout=1)
+        self.bridge = WebBridge(self.server, 0, "127.0.0.1")
+        for target in (self.server.serve_forever, self.bridge.serve_forever):
+            threading.Thread(target=target, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.clients = []
+        self.tls = ssl.create_default_context()
+        self.tls.check_hostname, self.tls.verify_mode = False, ssl.CERT_NONE  # self-signed on purpose
+
+    def tearDown(self):
+        for c in self.clients:
+            c.close()
+        self.bridge.shutdown()
+        self.server.shutdown()
+        self.tmp.cleanup()
+
+    def https_get(self, path):
+        conn = http.client.HTTPSConnection("127.0.0.1", self.bridge.port, context=self.tls, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", path)
+        r = conn.getresponse()
+        return r.status, r.read()
+
+    def phone(self, origin=None):
+        """A bare WebSocket client like a phone's browser; returns (call, events, status)."""
+        host = f"127.0.0.1:{self.bridge.port}"
+        s = self.tls.wrap_socket(socket.create_connection(("127.0.0.1", self.bridge.port)), server_hostname="localhost")
+        self.addCleanup(s.close)
+        s.sendall((f"GET /ws HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\nSec-WebSocket-Version: 13\r\n"
+                   f"Origin: {origin or 'https://' + host}\r\n\r\n").encode())
+        rfile = s.makefile("rb")
+        status = int(rfile.readline().split()[1])
+        while rfile.readline() not in (b"\r\n", b""):
+            pass
+        events, results, rid = queue.Queue(), {}, [0]
+
+        def reader():
+            try:
+                while True:
+                    b1, b2 = rfile.read(2)
+                    n = b2 & 0x7F
+                    if n == 126:
+                        (n,) = struct.unpack("!H", rfile.read(2))
+                    elif n == 127:
+                        (n,) = struct.unpack("!Q", rfile.read(8))
+                    m = json.loads(rfile.read(n))
+                    (events.put(m["event"]) if "event" in m else results[m["rid"]].put(m["result"]))
+            except (OSError, ValueError):
+                pass
+        if status == 101:
+            threading.Thread(target=reader, daemon=True).start()
+
+        def call(name, *args):
+            rid[0] += 1
+            results[rid[0]] = queue.Queue()
+            s.sendall(masked_frame(json.dumps({"rid": rid[0], "call": name, "args": list(args)}).encode()))
+            return results[rid[0]].get(timeout=5)
+        return call, events, status
+
+    def desktop(self, name):
+        inbox = queue.Queue()
+        c = ChatClient("127.0.0.1", self.server.port, name, PASSWORD, on_message=inbox.put,
+                       heartbeat=0.3, idle_timeout=1.5, download_dir=self.tmp.name)
+        self.clients.append(c)
+        c.join()
+        c.start()
+        return c, inbox
+
+    next_of = ChatTest.next_of
+
+    def test_page_includes_bridge_script(self):
+        status, body = self.https_get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b'<script src="/web.js"></script>', body)
+        self.assertEqual(self.https_get("/web.js")[0], 200)
+        self.assertEqual(self.https_get("/files/not-a-token/x")[0], 404)
+
+    def test_cross_site_websocket_rejected(self):
+        _, _, status = self.phone(origin="https://evil.example")
+        self.assertEqual(status, 403)
+
+    def test_phone_wrong_password_then_rate_limited(self):
+        call, _, status = self.phone()
+        self.assertEqual(status, 101)
+        self.assertTrue(call("setup")["web"])
+        for _ in range(5):
+            self.assertEqual(call("join", "eve", "wrong password", "")["error"], "wrong password")
+        self.assertIn("too many", call("join", "eve", PASSWORD, "")["error"])
+
+    def test_phone_chats_with_desktop(self):
+        bob, b_in = self.desktop("bob")
+        call, events, _ = self.phone()
+        self.assertTrue(call("join", "phone", PASSWORD, "")["ok"])
+        mid = bob.broadcast("hi phone")
+        self.assertEqual(self.next_of(events, "msg")["text"], "hi phone")
+        call("private", "bob", "hi from my phone", {"id": mid, "from": "bob", "text": "hi phone"})
+        pm = self.next_of(b_in, "pm")
+        self.assertEqual((pm["from"], pm["text"], pm["reply_to"]["id"]), ("phone", "hi from my phone", mid))
+        call("react", mid, "❤️", None)
+        self.assertEqual(self.next_of(b_in, "react")["emoji"], "❤️")
+        self.assertEqual(self.next_of(events, "ack")["from"], "bob")  # bob acked the phone's pm
+
+    def test_files_both_ways(self):
+        bob, b_in = self.desktop("bob")
+        call, events, _ = self.phone()
+        call("join", "phone", PASSWORD, "")
+        up = os.urandom(70_000)
+        r = call("send_file_data", "from-phone.bin", base64.b64encode(up).decode(), "bob")
+        self.assertEqual(r["size"], len(up))
+        with open(self.next_of(b_in, "file_saved")["path"], "rb") as f:
+            self.assertEqual(f.read(), up)
+
+        down = os.urandom(90_000)
+        src = os.path.join(self.tmp.name, "to-phone.bin")
+        with open(src, "wb") as f:
+            f.write(down)
+        bob.send_file(src, to="phone")
+        saved = self.next_of(events, "file_saved")
+        self.assertNotIn("path", saved)  # server paths never reach the browser
+        status, body = self.https_get(saved["url"])
+        self.assertEqual((status, body), (200, down))
 
 if __name__ == "__main__":
     unittest.main()
