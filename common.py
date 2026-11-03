@@ -1,6 +1,7 @@
 """Shared wire protocol: length-prefixed frames carrying JSON, optionally Fernet-encrypted,
 plus UDP broadcast discovery so clients can find the server on the LAN."""
 import base64
+import functools
 import getpass
 import json
 import socket
@@ -13,10 +14,20 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 HEADER = struct.Struct("!I")  # 4-byte big-endian payload length
 MAX_FRAME = 1 << 20  # reject frames over 1 MiB so a bad peer can't make us allocate GBs
+PROTOCOL_VERSION = 2
 DEFAULT_PORT = 5050
 DISCOVERY_PORT = 5051
 BEACON = b"TCPMSG"
-SALT = b"tcp-messenger-v1"
+
+HEARTBEAT_INTERVAL = 5  # client pings this often (seconds)
+IDLE_TIMEOUT = 15       # either side drops a connection silent for this long
+JOIN_TIMEOUT = 10       # time a new connection gets to send a valid join
+MAX_CLIENTS = 100
+SEND_QUEUE_MAX = 1000   # frames buffered per client before it counts as a slow consumer
+TOKEN_TTL = 60          # Fernet tokens older than this are rejected (replay protection)
+MIN_PASSWORD = 8
+CHUNK = 48 * 1024       # file bytes per frame (~87 KB on the wire after base64 + Fernet)
+MAX_FILE = 10 * 1024 * 1024
 
 
 def send_frame(sock: socket.socket, payload: bytes) -> None:
@@ -40,18 +51,26 @@ def recv_frame(sock: socket.socket) -> bytes:
     return _recv_exact(sock, length)
 
 
-def cipher_from_password(password: str) -> Fernet:
-    # fixed salt on purpose: every client must derive the same key from the room password
-    # without exchanging anything first
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=SALT, iterations=600_000)
-    return Fernet(base64.urlsafe_b64encode(kdf.derive(password.encode())))
+@functools.lru_cache(maxsize=8)  # reconnects to the same server reuse the ~0.3 s derivation
+def _derive(password: str, salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=600_000)
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 
-def cipher_from_args(a) -> Fernet | None:
-    """Shared by the CLI tools: --no-encrypt, else --password, else prompt for it."""
+def cipher_from_password(password: str, salt: bytes) -> Fernet:
+    """The salt is random per server run and sent in the plaintext hello, so guesses
+    precomputed against one session are useless against the next."""
+    return Fernet(_derive(password, salt))
+
+
+def password_from_args(a) -> str | None:
+    """Shared by the CLI tools: None with --no-encrypt, else --password, else prompt."""
     if a.no_encrypt:
         return None
-    return cipher_from_password(a.password or getpass.getpass("room password: "))
+    pw = a.password or getpass.getpass(f"room password (min {MIN_PASSWORD} characters): ")
+    if len(pw) < MIN_PASSWORD:
+        raise SystemExit(f"password must be at least {MIN_PASSWORD} characters")
+    return pw
 
 
 def local_ip() -> str | None:
@@ -120,8 +139,14 @@ def encode(msg: dict, cipher: Fernet | None) -> bytes:
 
 
 def decode(payload: bytes, cipher: Fernet | None) -> dict:
-    # Fernet.decrypt raises InvalidToken on tampered data or a wrong key
-    return json.loads(cipher.decrypt(payload) if cipher else payload)
+    # Fernet.decrypt raises InvalidToken on tampered data, a wrong key, or a token older than
+    # TOKEN_TTL (a replayed capture); also needs the two clocks within 60 s of each other
+    return json.loads(cipher.decrypt(payload, ttl=TOKEN_TTL) if cipher else payload)
+
+
+def plain(msg: dict) -> bytes:
+    """Frames sent before a key exists (hello, handshake errors) are plaintext JSON."""
+    return json.dumps(msg).encode()
 
 
 def make_msg(type_: str, **fields) -> dict:

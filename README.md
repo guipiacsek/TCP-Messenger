@@ -5,8 +5,12 @@ Multithreaded TCP chat application in Python (`socket` + `threading`), with a de
 - **Broadcast chat:** a message from any client is relayed to every connected client
 - **Private chat:** messages to one user are delivered only to that user
 - **Encryption:** every payload in both chat modes is encrypted with Fernet (AES-128-CBC + HMAC-SHA256), using a key derived from a shared room password
+- **File and image sharing:** up to 10 MB, streamed in chunks; images show inline
+- **Desktop GUI:** a thread per conversation, unread counts, typing indicator, ✓/✓✓ receipts with delivery latency, notifications and a Dock badge
 - **Zero-config LAN:** the server announces itself over UDP broadcast, so clients find it without typing an IP address
-- **Benchmarks:** encryption cost and round-trip latency, encryption on vs off, on loopback and over Wi-Fi
+- **Resilient:** heartbeats detect dead connections, and clients reconnect on their own
+- **Hardened:** replay protection, a per-run random salt, rate-limited password guessing, and isolation from slow clients
+- **Benchmarks:** encryption cost, round-trip and delivery latency, and file throughput, encryption on vs off
 
 See [docs/REPORT.md](docs/REPORT.md) for the design and results, and [docs/DEMO.md](docs/DEMO.md) for the video demo script.
 
@@ -20,7 +24,7 @@ pip3 install -r requirements.txt
 
 ## Run it
 
-On **one** machine, start the server and pick a room password:
+On **one** machine, start the server and pick a room password (at least 8 characters):
 
 ```bash
 python3 server.py
@@ -32,7 +36,10 @@ On **every** machine that wants to chat (the server machine too), open the GUI:
 python3 gui.py
 ```
 
-Type a username and the room password. The server address fills in automatically if it's on the same Wi-Fi. Pick "Everyone" or a user at the top to choose who you're messaging.
+Type a username and the room password. The server address fills in automatically if it's on the same Wi-Fi.
+- Pick "Everyone" or a user at the top to switch conversations.
+- 📎 sends a file to the current conversation. Received files go to `~/Downloads/TCP Messenger/`.
+- If the connection drops, the app reconnects by itself.
 
 Prefer the terminal? `python3 client.py` works the same way: it finds the server and asks for your name and the password.
 
@@ -48,6 +55,7 @@ Prefer the terminal? `python3 client.py` works the same way: it finds the server
 |---|---|
 | `hello` | broadcast to everyone |
 | `/msg bob hi` | private message to `bob` |
+| `/send ~/cat.png` / `/send ~/cat.png bob` | send a file to everyone / to `bob` |
 | `/list` | show online users |
 | `/quit` | disconnect |
 
@@ -59,7 +67,7 @@ Prefer the terminal? `python3 client.py` works the same way: it finds the server
 | `--no-encrypt` | all | plaintext JSON (both sides must match). Used for benchmarking |
 | `--host`, `--port` | all | server address (clients find it automatically if `--host` is omitted; default port `5050`) |
 | `--no-announce` | server | don't advertise on the LAN |
-| `--debug` | server, client | print the raw bytes of each frame, which shows the ciphertext on the wire |
+| `--debug` | server, client | print the raw bytes of each frame (shows the ciphertext on the wire); the client also prints delivery latency |
 
 ## Tests and benchmarks
 
