@@ -105,8 +105,8 @@
 <dialog id="invite">
   <b>Join from a phone</b>
   <img id="qr" alt="QR code to join this chat">
-  <p>Scan with a phone on this Wi-Fi. Anyone who scans it can join.</p>
-  <p>The first time, the phone warns that the connection isn't private: the server made its own certificate. Tap through to continue.</p>
+  <p id="inviteWhere"></p>
+  <p id="inviteCert">The first time, the phone warns that the connection isn't private: the server made its own certificate. Tap through to continue.</p>
   <p><code id="inviteUrl"></code></p>
   <button onclick="invite.close()">Done</button>
 </dialog>
@@ -340,6 +340,9 @@
     const r = await api().invite();
     if (!r) { add(to, "sys err", "This server doesn't have phone access turned on."); return; }
     qr.src = r.qr; inviteUrl.textContent = r.url.split("#")[0];
+    inviteWhere.textContent = (r.public ? "Scan with any phone, on any network." : "Scan with a phone on this Wi-Fi.")
+      + " Anyone who scans it can join.";
+    inviteCert.hidden = r.public;
     invite.showModal();
   };
 

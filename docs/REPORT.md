@@ -204,6 +204,12 @@ Unmasking uses a single big-integer XOR, so a 10 MB upload isn't a Python loop o
 
 **Trust model:** the bridge runs inside the server process, which already sees plaintext in order to route. The phone path is therefore TLS from phone to server, then the same Fernet path as everyone else. Phones don't widen what the server can see.
 
+**Optional public tunnel (`--tunnel`).**
+- The self-signed certificate means a warning on every new phone. With `--tunnel`, the server also starts `cloudflared` (a Cloudflare quick tunnel, no account needed) pointing at the bridge, reads the random `https://….trycloudflare.com` address it prints, and sends it to clients in `hello`. The invite QR code then uses that address.
+- That address has a publicly trusted certificate, so phones open it with no warning, and it works from any network, not only the LAN.
+- **Trade-off:** Cloudflare terminates the phone's TLS at its edge, so the phone's messages are readable there before travelling down the tunnel. Laptops are unaffected: their traffic never uses the tunnel and stays end-to-end Fernet encrypted.
+- **Exposure:** the join page is now reachable from the internet by anyone who has the URL. The password check and rate limit still apply, and since every tunnelled request comes from `cloudflared` on `127.0.0.1`, the bridge rate-limits by the phone's real address from the `CF-Connecting-IP` header. That header is only trusted on loopback connections while the tunnel is on. The Origin check also accepts the tunnel address.
+
 ## 4. Concurrency
 
 | Shared state | Protection | Why |

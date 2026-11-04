@@ -45,9 +45,11 @@ class Api(ClientSession):
             host = local_ip() or host
         # the password rides in the #fragment, which browsers never send over the network
         fragment = "#" + urllib.parse.urlencode({"pw": self._password}) if self._password else ""
-        url = f"https://{host}:{self._client.web_port}/{fragment}"
+        base = self._client.web_url or f"https://{host}:{self._client.web_port}"
+        url = f"{base}/{fragment}"
         svg = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, border=1).to_string()
-        return {"url": url, "qr": "data:image/svg+xml;base64," + base64.b64encode(svg).decode()}
+        return {"url": url, "qr": "data:image/svg+xml;base64," + base64.b64encode(svg).decode(),
+                "public": bool(self._client.web_url)}
 
     def reveal(self, path):
         # only files we saved ourselves; the path comes back from the page, so don't trust it blindly

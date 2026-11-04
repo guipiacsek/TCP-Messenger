@@ -1,5 +1,6 @@
 """Multithreaded TCP chat server: a reader and a writer thread per client, broadcast + private messages."""
 import argparse
+import atexit
 import base64
 import errno
 import hashlib
@@ -69,6 +70,7 @@ class ChatServer:
         self.port = self.sock.getsockname()[1]  # real port when bound to 0 (tests)
         self.running = True
         self.web_port = None  # set by WebBridge so clients can build the phone invite link
+        self.web_url = None   # public https address when --tunnel is on
 
     def serve_forever(self):
         print(f"[server] listening on port {self.port} (encryption {'ON' if self.cipher else 'OFF'})")
@@ -173,7 +175,8 @@ class ChatServer:
         try:
             conn.sock.settimeout(self.join_timeout)
             salt = base64.b64encode(self.salt).decode() if self.salt else None
-            self.enqueue(conn, plain(make_msg("hello", v=PROTOCOL_VERSION, salt=salt, web_port=self.web_port)))
+            self.enqueue(conn, plain(make_msg("hello", v=PROTOCOL_VERSION, salt=salt, web_port=self.web_port,
+                                                  web_url=self.web_url)))
             if not self.register(conn):
                 return
             conn.sock.settimeout(self.idle_timeout)  # clients ping every few seconds
@@ -274,6 +277,8 @@ def main():
     p.add_argument("--no-encrypt", action="store_true", help="send plaintext JSON (for benchmarking)")
     p.add_argument("--no-announce", action="store_true", help="don't advertise this server on the LAN")
     p.add_argument("--no-web", action="store_true", help="don't serve the phone/browser client")
+    p.add_argument("--tunnel", action="store_true",
+                   help="also publish the phone client at a public https URL via Cloudflare (needs cloudflared)")
     p.add_argument("--debug", action="store_true", help="print raw bytes on the wire")
     a = p.parse_args()
     password = password_from_args(a)
@@ -294,6 +299,16 @@ def main():
             threading.Thread(target=bridge.serve_forever, daemon=True).start()
             print(f"[server] phones: https://{local_ip() or 'localhost'}:{bridge.port} "
                   f"(certificate SHA-256 {bridge.fingerprint[:23]}...)")
+            if a.tunnel:
+                from web import start_tunnel
+                try:
+                    tunnel, server.web_url = start_tunnel(bridge.port)
+                except OSError as e:
+                    why = "cloudflared isn't installed" if isinstance(e, FileNotFoundError) else e
+                    print(f"[server] tunnel off: {why}. See README > Phones from anywhere")
+                else:
+                    atexit.register(tunnel.terminate)
+                    print(f"[server] phones, from anywhere: {server.web_url}")
     if not a.no_announce:
         threading.Thread(target=announce, args=(server.port,), daemon=True).start()
         print(f"[server] announcing on the LAN (UDP {DISCOVERY_PORT}); clients will find it automatically")

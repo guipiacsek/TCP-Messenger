@@ -12,10 +12,13 @@ import ipaddress
 import json
 import mimetypes
 import os
+import queue
+import re
 import secrets
 import shutil
 import ssl
 import struct
+import subprocess
 import tempfile
 import threading
 import urllib.parse
@@ -36,6 +39,7 @@ WS_MAX_MESSAGE = 16 * 1024 * 1024  # a 10 MB file as base64 JSON, with room to s
 WS_IDLE_TIMEOUT = 30  # web.js sends a keepalive every 10 s; silence = phone gone
 PREVIEW_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}  # no SVG: it can carry script
 PREVIEW_MAX = 5 * 1024 * 1024
+TUNNEL_URL = re.compile(rb"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
 def preview(name: str, data: bytes) -> str | None:
@@ -106,6 +110,29 @@ class ClientSession:
     def _close(self):
         if self._client:
             self._client.close()
+
+
+# --- Cloudflare quick tunnel -------------------------------------------------------------
+
+def start_tunnel(port: int, timeout: float = 30) -> tuple[subprocess.Popen, str]:
+    """Publish the web client at a random https://*.trycloudflare.com address, which has a real
+    certificate (no browser warning) and works from any network. Needs cloudflared installed.
+    Cloudflare terminates that HTTPS, so it can read phone traffic; laptops stay end-to-end."""
+    proc = subprocess.Popen(["cloudflared", "tunnel", "--no-autoupdate", "--no-tls-verify",
+                             "--url", f"https://localhost:{port}"],  # our cert is self-signed
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    found = queue.Queue()
+
+    def read():  # keep draining after the URL, or a full pipe would stall cloudflared
+        for line in proc.stderr:
+            if m := TUNNEL_URL.search(line):
+                found.put(m.group().decode())
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        return proc, found.get(timeout=timeout)
+    except queue.Empty:
+        proc.kill()
+        raise OSError("cloudflared didn't report a public URL") from None
 
 
 # --- self-signed certificate ------------------------------------------------------------
@@ -352,7 +379,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def websocket(self):
         # cross-site WebSocket hijacking: only our own page may open the socket
-        if self.headers.get("Origin") != f"https://{self.headers.get('Host')}":
+        origin = self.headers.get("Origin")
+        if origin not in (f"https://{self.headers.get('Host')}", self.bridge.server.web_url):
             self.reply(403, "text/plain", b"bad origin")
             return
         key = self.headers.get("Sec-WebSocket-Key", "")
@@ -370,7 +398,10 @@ class _Handler(BaseHTTPRequestHandler):
             with send_lock:  # ChatClient threads push events while this thread answers calls
                 self.connection.sendall(ws_frame(opcode, payload))
 
-        session = WebSession(self.bridge, self.client_address[0], lambda text: send(0x1, text.encode()))
+        ip = self.client_address[0]
+        if ip == "127.0.0.1" and self.bridge.server.web_url:  # via the tunnel: rate-limit the real phone
+            ip = self.headers.get("CF-Connecting-IP", ip)
+        session = WebSession(self.bridge, ip, lambda text: send(0x1, text.encode()))
         self.connection.settimeout(WS_IDLE_TIMEOUT)
         try:
             while True:

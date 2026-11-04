@@ -48,6 +48,7 @@ class ChatClient:
         self.sock = None
         self.cipher = None
         self.web_port = None  # set from hello when the server also serves the phone web client
+        self.web_url = None   # set from hello when the server runs a public tunnel
         self.connected = False
         self.closing = False
         self._send_lock = threading.Lock()  # UI, heartbeat and file threads all send
@@ -71,6 +72,7 @@ class ChatClient:
                                    "bad_password")
             salt = hello["salt"]
             self.web_port = hello.get("web_port")
+            self.web_url = hello.get("web_url")
             cipher = cipher_from_password(self.password, base64.b64decode(salt)) if salt else None
             with self._send_lock:
                 self.sock, self.cipher = sock, cipher

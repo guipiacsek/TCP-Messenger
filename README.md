@@ -49,6 +49,16 @@ Click **📱** in the app and scan the QR code with a phone on the same Wi-Fi. T
 
 The first time, the phone warns that the connection isn't private. That's because the server makes its own HTTPS certificate each time it starts (there's no certificate authority on a home network). Tap through to continue. The server prints the certificate's fingerprint at startup if you want to compare.
 
+### Phones from anywhere, with no warning
+
+Start the server with `--tunnel` and the QR code points to a public `https://….trycloudflare.com` address instead. That address has a real certificate, so there's no warning, and it works on mobile data or any other Wi-Fi. It needs [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`brew install cloudflared`), and no Cloudflare account.
+
+```bash
+python3 server.py --tunnel
+```
+
+Trade-off: Cloudflare decrypts the phone's HTTPS at its edge before passing it on, so phone traffic is readable by Cloudflare. Laptop-to-laptop messages stay end-to-end encrypted with the room password. The address changes each time the server starts, and anyone with it can reach the join screen, so the room password is what keeps them out (wrong guesses are rate-limited per phone).
+
 Prefer the terminal? `python3 client.py` works the same way: it finds the server and asks for your name and the password.
 
 ### If the server isn't found
@@ -76,6 +86,7 @@ Prefer the terminal? `python3 client.py` works the same way: it finds the server
 | `--host`, `--port` | all | server address (clients find it automatically if `--host` is omitted; default port `5050`) |
 | `--no-announce` | server | don't advertise on the LAN |
 | `--no-web` | server | don't serve the phone/browser version (normally on port + 2, i.e. 5052) |
+| `--tunnel` | server | also publish the phone version at a public https URL via Cloudflare (needs `cloudflared`) |
 | `--debug` | server, client | print the raw bytes of each frame (shows the ciphertext on the wire); the client also prints delivery latency |
 
 ## Tests and benchmarks
